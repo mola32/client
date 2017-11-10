@@ -18,6 +18,7 @@
 #include <QNetworkReply>
 #include <QNetworkProxyFactory>
 #include <QPixmap>
+#include <QXmlStreamReader>
 
 #include "connectionvalidator.h"
 #include "account.h"
@@ -247,10 +248,22 @@ void ConnectionValidator::slotAuthSuccess()
 
 void ConnectionValidator::checkServerCapabilities()
 {
+    // The main flow now needs the capabilities
     JsonApiJob *job = new JsonApiJob(_account, QLatin1String("ocs/v1.php/cloud/capabilities"), this);
     job->setTimeout(timeoutToUseMsec);
     QObject::connect(job, &JsonApiJob::jsonReceived, this, &ConnectionValidator::slotCapabilitiesRecieved);
     job->start();
+
+    // And we'll retrieve the ocs config in parallel
+    auto ocsConfigUrl = Utility::concatUrlPath(_account->url(), QLatin1String("ocs/v1.php/config"));
+    auto configJob = _account->sendRequest("GET", ocsConfigUrl);
+    configJob->setTimeout(timeoutToUseMsec);
+    // note that 'this' might be destroyed before the job finishes
+    auto account = _account;
+    QObject::connect(configJob, &SimpleNetworkJob::finishedSignal, _account.data(),
+        [=](QNetworkReply *reply) {
+            ocsConfigReceived(reply, account);
+        });
 }
 
 void ConnectionValidator::slotCapabilitiesRecieved(const QJsonDocument &json)
@@ -266,6 +279,41 @@ void ConnectionValidator::slotCapabilitiesRecieved(const QJsonDocument &json)
     }
 
     fetchUser();
+}
+
+void ConnectionValidator::ocsConfigReceived(QNetworkReply *reply, AccountPtr account)
+{
+    if (reply->error() != QNetworkReply::NoError) {
+        qCWarning(lcConnectionValidator) << "Could not retrieve ocs config" << reply->errorString();
+        return;
+    }
+
+    QString host;
+    [&]() { // reading xml has suprisingly complex api, we just want to get /ocs/data/host
+        QXmlStreamReader reader(reply);
+        reader.readNextStartElement();
+        if (reader.name() != QLatin1String("ocs"))
+            return;
+
+        reader.readNextStartElement();
+        while (!reader.atEnd() && !reader.hasError()) {
+            reader.readNextStartElement();
+            if (reader.name() == QLatin1String("data")) {
+                while (!reader.atEnd() && !reader.hasError()) {
+                    reader.readNextStartElement();
+                    if (reader.name() == QLatin1String("host")) {
+                        host = reader.readElementText();
+                    }
+                }
+            }
+        }
+    }();
+    if (host.isEmpty()) {
+        qCWarning(lcConnectionValidator) << "Could not extract 'host' from ocs config reply";
+        return;
+    }
+    qCInfo(lcConnectionValidator) << "Determined user-visible host to be" << host;
+    account->setUserVisibleHost(host);
 }
 
 void ConnectionValidator::fetchUser()

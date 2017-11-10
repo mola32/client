@@ -58,8 +58,8 @@ namespace OCC {
                               |
   +---------------------------+
   |
-  +-> checkServerCapabilities (cloud/capabilities)
-        JsonApiJob
+  +-> checkServerCapabilities --------------v (in parallel)
+        JsonApiJob (cloud/capabilities)     SimpleNetworkJob (ocs/v1.php/config)
         |
         +-> slotCapabilitiesRecieved -+
                                       |
@@ -129,6 +129,7 @@ private:
     void reportResult(Status status);
     void checkServerCapabilities();
     void fetchUser();
+    static void ocsConfigReceived(QNetworkReply *reply, AccountPtr account);
 
     /** Sets the account's server version
      *
